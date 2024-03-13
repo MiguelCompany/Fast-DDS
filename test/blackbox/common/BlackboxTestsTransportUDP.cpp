@@ -533,6 +533,7 @@ TEST(TransportUDP, DatagramInjection)
 
     DatagramInjectionTransport::deliver_datagram_from_file(receivers, "datagrams/16784.bin");
     DatagramInjectionTransport::deliver_datagram_from_file(receivers, "datagrams/20140.bin");
+    DatagramInjectionTransport::deliver_datagram_from_file(receivers, "datagrams/20574.bin");
 }
 
 TEST(TransportUDP, MaliciousManipulatedDataOctetsToNextHeaderIgnore)

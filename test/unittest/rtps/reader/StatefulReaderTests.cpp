@@ -29,6 +29,8 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <thread>
 #include <vector>
 
 namespace eprosima {
@@ -408,6 +410,60 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberFullHang)
             /*finalFlag=*/ true, /*livelinessFlag=*/ false);
 
     RTPSDomain::removeRTPSWriter(writer);
+    RTPSDomain::removeRTPSReader(reader);
+}
+
+/**
+ * Regression test for GHSA-6m2p-wjv5-386v: a malicious HEARTBEAT with lastSN == INT32_MAX, UINT32_MAX-1.
+ *
+ * Would only crash when assertions are enabled (i.e. NDEBUG is not defined).
+ * The vulnerability triggered an assertion failure in the + operator of SequenceNumber_t, during the execution
+ * of StatefulReader::send_acknack.
+ */
+TEST(StatefulReaderTests, MaliciousHeartbeatHighSN)
+{
+    RTPSParticipantAttributes part_attrs;
+    RTPSParticipant* part = RTPSDomain::createParticipant(0, false, part_attrs, nullptr);
+
+    HistoryAttributes hatt{};
+    ReaderHistory reader_history(hatt);
+
+    ReaderAttributes reader_att{};
+    reader_att.endpoint.endpointKind = READER;
+    reader_att.endpoint.reliabilityKind = RELIABLE;
+    reader_att.endpoint.durabilityKind = TRANSIENT_LOCAL;
+    reader_att.times.heartbeat_response_delay.seconds = 0;
+    reader_att.times.heartbeat_response_delay.nanosec = 1;
+
+    RTPSReader* reader = RTPSDomain::createRTPSReader(part, reader_att, &reader_history, nullptr);
+    StatefulReader* uut = dynamic_cast<StatefulReader*>(reader);
+    ASSERT_NE(uut, nullptr);
+
+    TopicDescription topic_desc;
+    topic_desc.type_name = "string";
+    topic_desc.topic_name = "topic";
+    part->register_reader(reader, topic_desc, fastdds::dds::ReaderQos());
+
+    // Ensure the writer is considered remote, so we can trigger the send_acknack path in process_heartbeat_msg.
+    GUID_t writer_guid;
+    writer_guid.guidPrefix.value[0] = 0xFF;
+    writer_guid.entityId.value[0] = 0xFF;
+    PublicationBuiltinTopicData writer_data;
+    writer_data.guid = writer_guid;
+    writer_data.reliability.kind = fastdds::dds::RELIABLE_RELIABILITY_QOS;
+    writer_data.durability.kind = fastdds::dds::TRANSIENT_LOCAL_DURABILITY_QOS;
+    reader->matched_writer_add(writer_data);
+    ASSERT_TRUE(uut->matched_writer_is_matched(writer_guid));
+
+    // Send a malicious heartbeat with both firstSN and lastSN == INT32_MAX, UINT32_MAX-1.
+    // Force response by using finalFlag = false.
+    const SequenceNumber_t huge_SN{ std::numeric_limits<int32_t>::max(), std::numeric_limits<uint32_t>::max() - 1 };
+    uut->process_heartbeat_msg(writer_guid, /*hbCount=*/ 1, huge_SN, huge_SN,
+            /*finalFlag=*/ false, /*livelinessFlag=*/ false);
+
+    // Wait for the acknack timer to trigger, which will call send_acknack and potentially trigger the assertion.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
     RTPSDomain::removeRTPSReader(reader);
 }
 

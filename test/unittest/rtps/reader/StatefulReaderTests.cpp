@@ -18,13 +18,17 @@
 #include <fastdds/rtps/RTPSDomain.h>
 #include <fastdds/rtps/attributes/HistoryAttributes.h>
 #include <fastdds/rtps/attributes/ReaderAttributes.h>
+#include <fastdds/rtps/attributes/WriterAttributes.h>
 #include <fastdds/rtps/attributes/RTPSParticipantAttributes.h>
 #include <fastdds/rtps/builtin/data/WriterProxyData.h>
 #include <fastdds/rtps/common/CacheChange.h>
 #include <fastdds/rtps/history/ReaderHistory.h>
+#include <fastdds/rtps/history/WriterHistory.h>
 #include <fastdds/rtps/participant/RTPSParticipant.h>
 #include <fastdds/rtps/reader/ReaderListener.h>
 #include <fastdds/rtps/reader/RTPSReader.h>
+#include <fastdds/rtps/reader/StatefulReader.h>
+#include <fastdds/rtps/writer/RTPSWriter.h>
 
 #include <array>
 #include <cstdint>
@@ -212,10 +216,10 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberUnboundedNotifyLoop)
     StatefulReader* uut = dynamic_cast<StatefulReader*>(reader);
     ASSERT_NE(uut, nullptr);
 
-    TopicDescription topic_desc;
-    topic_desc.type_name = "string";
-    topic_desc.topic_name = "topic";
-    part->register_reader(reader, topic_desc, fastdds::dds::ReaderQos());
+    TopicAttributes topic_desc;
+    topic_desc.topicDataType = "string";
+    topic_desc.topicName = "topic";
+    part->registerReader(reader, topic_desc, fastdds::dds::ReaderQos());
 
     // measure_spin_us(huge_sn): inject one CacheChange with sequenceNumber == huge_sn (simulating
     // an attacker-forged DATA writerSN -- accepted without a sequence-number magnitude bound), then a
@@ -233,7 +237,7 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberUnboundedNotifyLoop)
 
                 RTPSWriter* writer = RTPSDomain::createRTPSWriter(part, writer_att, &writer_history, nullptr);
                 EXPECT_NE(writer, nullptr);
-                part->register_writer(writer, topic_desc, fastdds::dds::WriterQos());
+                part->registerWriter(writer, topic_desc, fastdds::dds::WriterQos());
                 auto writer_guid = writer->getGuid();
                 EXPECT_TRUE(uut->matched_writer_is_matched(writer_guid));
 
@@ -246,7 +250,7 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberUnboundedNotifyLoop)
                 prime.serializedPayload.length = 0;
                 prime.instanceHandle.value[0] = 1;
                 prime.kind = ChangeKind_t::ALIVE;
-                uut->process_data_msg(&prime);
+                uut->processDataMsg(&prime);
 
                 // (a) Attacker-forged DATA: no upper bound on sequence-number magnitude in
                 // WriterProxy::received_change_set / StatefulReader::change_received. Empty-payload
@@ -259,7 +263,7 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberUnboundedNotifyLoop)
                 change.serializedPayload.length = 0;
                 change.instanceHandle.value[0] = 1;
                 change.kind = ChangeKind_t::NOT_ALIVE_DISPOSED;
-                EXPECT_TRUE(uut->process_data_msg(&change));
+                EXPECT_TRUE(uut->processDataMsg(&change));
 
                 // (b) Attacker-forged HEARTBEAT: no upper bound check in
                 // WriterProxy::process_heartbeat / lost_changes_update either.
@@ -267,7 +271,7 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberUnboundedNotifyLoop)
                 SequenceNumber_t lastSN = huge_sn + 2;
 
                 auto t0 = std::chrono::steady_clock::now();
-                uut->process_heartbeat_msg(writer_guid, /*hbCount=*/ 1, firstSN, lastSN,
+                uut->processHeartbeatMsg(writer_guid, /*hbCount=*/ 1, firstSN, lastSN,
                         /*finalFlag=*/ true, /*livelinessFlag=*/ false);
                 auto t1 = std::chrono::steady_clock::now();
 
@@ -303,14 +307,14 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberUnboundedNotifyLoop)
                 writer_att.endpoint.durabilityKind = TRANSIENT_LOCAL;
                 RTPSWriter* writer = RTPSDomain::createRTPSWriter(part, writer_att, &writer_history, nullptr);
                 EXPECT_NE(writer, nullptr);
-                part->register_writer(writer, topic_desc, fastdds::dds::WriterQos());
+                part->registerWriter(writer, topic_desc, fastdds::dds::WriterQos());
                 auto writer_guid = writer->getGuid();
                 EXPECT_TRUE(uut->matched_writer_is_matched(writer_guid));
                 // No DATA change stored: HEARTBEAT alone.
                 SequenceNumber_t firstSN = huge_sn + 1;
                 SequenceNumber_t lastSN = huge_sn + 2;
                 auto t0 = std::chrono::steady_clock::now();
-                uut->process_heartbeat_msg(writer_guid, /*hbCount=*/ 1, firstSN, lastSN,
+                uut->processHeartbeatMsg(writer_guid, /*hbCount=*/ 1, firstSN, lastSN,
                         /*finalFlag=*/ true, /*livelinessFlag=*/ false);
                 auto t1 = std::chrono::steady_clock::now();
                 RTPSDomain::removeRTPSWriter(writer);
@@ -327,8 +331,9 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberUnboundedNotifyLoop)
         EXPECT_LT(ratio, 5.0);
     }
 
-    // Destroy the reader
+    // Destroy the entities
     RTPSDomain::removeRTPSReader(reader);
+    RTPSDomain::removeRTPSParticipant(part);
 }
 
 /* Live demonstration of the actual denial of service for GHSA-57rp-jm6r-xjw5.
@@ -363,10 +368,10 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberFullHang)
     StatefulReader* uut = dynamic_cast<StatefulReader*>(reader);
     ASSERT_NE(uut, nullptr);
 
-    TopicDescription topic_desc;
-    topic_desc.type_name = "string";
-    topic_desc.topic_name = "topic";
-    part->register_reader(reader, topic_desc, fastdds::dds::ReaderQos());
+    TopicAttributes topic_desc;
+    topic_desc.topicDataType = "string";
+    topic_desc.topicName = "topic";
+    part->registerReader(reader, topic_desc, fastdds::dds::ReaderQos());
 
     HistoryAttributes whatt{};
     WriterHistory writer_history(whatt);
@@ -376,7 +381,7 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberFullHang)
     writer_att.endpoint.durabilityKind = TRANSIENT_LOCAL;
     RTPSWriter* writer = RTPSDomain::createRTPSWriter(part, writer_att, &writer_history, nullptr);
     ASSERT_NE(writer, nullptr);
-    part->register_writer(writer, topic_desc, fastdds::dds::WriterQos());
+    part->registerWriter(writer, topic_desc, fastdds::dds::WriterQos());
     auto writer_guid = writer->getGuid();
     ASSERT_TRUE(uut->matched_writer_is_matched(writer_guid));
 
@@ -391,7 +396,7 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberFullHang)
     prime.serializedPayload.length = 0;
     prime.instanceHandle.value[0] = 1;
     prime.kind = ChangeKind_t::ALIVE;
-    uut->process_data_msg(&prime);
+    uut->processDataMsg(&prime);
 
     CacheChange_t change;
     change.writerGUID = writer_guid;
@@ -399,18 +404,19 @@ TEST(StatefulReaderTests, DataHeartbeatSequenceNumberFullHang)
     change.serializedPayload.length = 0;
     change.instanceHandle.value[0] = 1;
     change.kind = ChangeKind_t::NOT_ALIVE_DISPOSED;
-    ASSERT_TRUE(uut->process_data_msg(&change));
+    ASSERT_TRUE(uut->processDataMsg(&change));
 
     const SequenceNumber_t firstSN = huge + 1;   // 0x5300000000000002
     const SequenceNumber_t lastSN  = huge + 2;
 
     // Vulnerable build: never returns (inner do-while runs ~5.98e18 iterations).
     // Fixed build: returns immediately and reaches the line below.
-    uut->process_heartbeat_msg(writer_guid, /*hbCount=*/ 1, firstSN, lastSN,
+    uut->processHeartbeatMsg(writer_guid, /*hbCount=*/ 1, firstSN, lastSN,
             /*finalFlag=*/ true, /*livelinessFlag=*/ false);
 
     RTPSDomain::removeRTPSWriter(writer);
     RTPSDomain::removeRTPSReader(reader);
+    RTPSDomain::removeRTPSParticipant(part);
 }
 
 /**
@@ -432,39 +438,40 @@ TEST(StatefulReaderTests, MaliciousHeartbeatHighSN)
     reader_att.endpoint.endpointKind = READER;
     reader_att.endpoint.reliabilityKind = RELIABLE;
     reader_att.endpoint.durabilityKind = TRANSIENT_LOCAL;
-    reader_att.times.heartbeat_response_delay.seconds = 0;
-    reader_att.times.heartbeat_response_delay.nanosec = 1;
+    reader_att.times.heartbeatResponseDelay.seconds = 0;
+    reader_att.times.heartbeatResponseDelay.nanosec = 1;
 
     RTPSReader* reader = RTPSDomain::createRTPSReader(part, reader_att, &reader_history, nullptr);
     StatefulReader* uut = dynamic_cast<StatefulReader*>(reader);
     ASSERT_NE(uut, nullptr);
 
-    TopicDescription topic_desc;
-    topic_desc.type_name = "string";
-    topic_desc.topic_name = "topic";
-    part->register_reader(reader, topic_desc, fastdds::dds::ReaderQos());
+    TopicAttributes topic_desc;
+    topic_desc.topicDataType = "string";
+    topic_desc.topicName = "topic";
+    part->registerReader(reader, topic_desc, fastdds::dds::ReaderQos());
 
     // Ensure the writer is considered remote, so we can trigger the send_acknack path in process_heartbeat_msg.
     GUID_t writer_guid;
     writer_guid.guidPrefix.value[0] = 0xFF;
     writer_guid.entityId.value[0] = 0xFF;
-    PublicationBuiltinTopicData writer_data;
-    writer_data.guid = writer_guid;
-    writer_data.reliability.kind = fastdds::dds::RELIABLE_RELIABILITY_QOS;
-    writer_data.durability.kind = fastdds::dds::TRANSIENT_LOCAL_DURABILITY_QOS;
+    WriterProxyData writer_data(0, 0);
+    writer_data.guid(writer_guid);
+    writer_data.m_qos.m_reliability.kind = fastdds::dds::RELIABLE_RELIABILITY_QOS;
+    writer_data.m_qos.m_durability.kind = fastdds::dds::TRANSIENT_LOCAL_DURABILITY_QOS;
     reader->matched_writer_add(writer_data);
     ASSERT_TRUE(uut->matched_writer_is_matched(writer_guid));
 
     // Send a malicious heartbeat with both firstSN and lastSN == INT32_MAX, UINT32_MAX-1.
     // Force response by using finalFlag = false.
     const SequenceNumber_t huge_SN{ std::numeric_limits<int32_t>::max(), std::numeric_limits<uint32_t>::max() - 1 };
-    uut->process_heartbeat_msg(writer_guid, /*hbCount=*/ 1, huge_SN, huge_SN,
+    uut->processHeartbeatMsg(writer_guid, /*hbCount=*/ 1, huge_SN, huge_SN,
             /*finalFlag=*/ false, /*livelinessFlag=*/ false);
 
     // Wait for the acknack timer to trigger, which will call send_acknack and potentially trigger the assertion.
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     RTPSDomain::removeRTPSReader(reader);
+    RTPSDomain::removeRTPSParticipant(part);
 }
 
 } // namespace rtps
